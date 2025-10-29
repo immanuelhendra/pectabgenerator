@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PECTAB → AD (KPM180H) — single file</title>
+<style>
+  :root{--bg:#0b0e12;--panel:#121720;--ink:#e6eefc;--muted:#9fb1ca;--brand:#5ea1ff;--ok:#7cffc2;--warn:#ffd66b}
+  *{box-sizing:border-box} html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,Segoe UI,Roboto,Helvetica,Arial}
+  header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:#0e1420;border-bottom:1px solid #1b2332}
+  main{padding:14px;display:grid;gap:14px;grid-template-columns:380px 1fr}
+  .card{background:#111725;border:1px solid #1b2332;border-radius:12px;overflow:hidden}
+  .card .hd{padding:10px 12px;border-bottom:1px solid #1b2332;font-weight:600}
+  .card .bd{padding:12px;display:grid;gap:10px}
+  label{font-size:12px;color:var(--muted)}
+  input[type=file],textarea,button,select{width:100%;padding:10px 12px;border-radius:10px;border:1px solid #243149;background:#0e131c;color:var(--ink)}
+  textarea{min-height:140px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+  button{cursor:pointer}
+  .row{display:flex;gap:8px}
+  .ok{color:var(--ok)} .muted{color:var(--muted)} .warn{color:var(--warn)}
+  .mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+  .fine{font-size:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <div><strong>PECTAB → AD</strong> <span class="muted">(single‑file, client‑side)</span></div>
+  <div class="fine">Target: Custom <strong>KPM180H</strong> (AEA/ITPS)</div>
+</header>
+<main>
+  <section class="card">
+    <div class="hd">1) Upload PECTAB (.txt)</div>
+    <div class="bd">
+      <input id="file" type="file" accept="text/plain,.txt" />
+      <div class="fine">Use the exported PECTAB with <em>data already merged</em> (no %TOKENS%).</div>
+      <div class="row">
+        <button id="btnConvert">Convert to AD</button>
+        <button id="btnCopy">Copy AD</button>
+        <button id="btnDownload">Download AD</button>
+      </div>
+      <div class="fine">Status: <span id="status" class="muted">waiting for file…</span></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="hd">Output — AD one‑liner</div>
+    <div class="bd">
+      <textarea id="out" class="mono" placeholder="AD;… will appear here" spellcheck="false"></textarea>
+      <details>
+        <summary>Encoder settings (edit if you have the KPM packing table)</summary>
+        <div class="fine">These JS helpers control how coords/flags are packed. The placeholders below are readable and safe. To match your firmware exactly, replace the bodies of <code>packCoords</code>, <code>packTextAttrs</code>, and <code>packBarcodeAttrs</code> per the KPM180H AEA manual.</div>
+        <textarea id="fnbox" class="mono" rows="14"></textarea>
+        <button id="btnApply">Apply custom packers</button>
+      </details>
+    </div>
+  </section>
+</main>
+
+<script>
+// ---------- Minimal PECTAB parser ----------
+const RE = {
+  PT:   /^PT;ID=(.+)$/,
+  PAGE: /^PAGE;W=(\d+);H=(\d+)/,
+  TEXT: /^TEXT;X=(\d+);Y=(\d+);W=(\d+);H=(\d+);FONT=([^;]+);SIZE=(\d+);ALIGN=([^;]+);DATA=(.+)$/,
+  BAR:  /^BARCODE;TYPE=([^;]+);X=(\d+);Y=(\d+);W=(\d+);H=(\d+);MODULE=(\d+);DATA=(.+)$/,
+  BOX:  /^BOX;X=(\d+);Y=(\d+);W=(\d+);H=(\d+);T=(\d+)$/
+};
+
+function parsePECTAB(txt){
+  let id = 'BT01';
+  let page = {w:0,h:0,dpi:203};
+  const items = [];
+  for(const raw of txt.split(/\r?\n/)){
+    const line = raw.trim();
+    if(!line || line.startsWith(';')) continue;
+    let m;
+    if(m = line.match(RE.PT)){ id = m[1]; continue; }
+    if(m = line.match(RE.PAGE)){ page.w=+m[1]; page.h=+m[2]; continue; }
+    if(m = line.match(RE.TEXT)){
+      const [_,x,y,w,h,font,size,align,data]=m;
+      items.push({kind:'text',x:+x,y:+y,w:+w,h:+h,font,size:+size,align,data});
+      continue;
+    }
+    if(m = line.match(RE.BAR)){
+      const [_,type,x,y,w,h,mod,data]=m;
+      items.push({kind:'barcode',sym:type,x:+x,y:+y,w:+w,h:+h,module:+mod,data});
+      continue;
+    }
+    if(m = line.match(RE.BOX)){
+      const [_,x,y,w,h,t]=m;
+      items.push({kind:'box',x:+x,y:+y,w:+w,h:+h,t:+t});
+      continue;
+    }
+  }
+  return {id,page,items};
+}
+
+// ---------- Encoders (placeholders; edit to match KPM180H packing) ----------
+let packers = {
+  header: (id)=>`AD;${id}]`,
+  pad2: (n)=> (n<10?"0":"")+n,
+  /**
+   * TODO: Replace with KPM180H's coordinate packing (the part that becomes 5255490201 etc.)
+   * For now we emit zero-padded decimal fields X4 Y4 W4 H4 so you can verify numbers by eye.
+   */
+  packCoords: (x,y,w,h)=> `${x.toString().padStart(4,'0')}${y.toString().padStart(4,'0')}${w.toString().padStart(4,'0')}${h.toString().padStart(4,'0')}`,
+  /**
+   * TODO: Map your font/size/align to the correct flag bytes (e.g., C0/M1/…)
+   */
+  packTextAttrs: (font,size,align)=> 'C0',
+  /**
+   * TODO: Return [flag, aux] for barcode (e.g., 'K0', ' A003250202') per KPM table
+   */
+  packBarcodeAttrs: (sym,module)=> ['K0','']
+};
+
+function buildAD(tpl){
+  const out = [ packers.header(tpl.id) ];
+  let idx = 1;
+  for(const it of tpl.items){
+    if(it.kind==='text'){
+      const flag = packers.packTextAttrs(it.font, it.size, it.align);
+      const coords = packers.packCoords(it.x,it.y,it.w,it.h);
+      out.push(`#${packers.pad2(idx)}${flag} ${coords}`);
+      idx++;
+    } else if(it.kind==='barcode'){
+      const [flag, aux] = packers.packBarcodeAttrs(it.sym, it.module);
+      const coords = packers.packCoords(it.x,it.y,it.w,it.h);
+      out.push(`#${packers.pad2(idx)}${flag} ${coords}${aux?(''+aux):''}`);
+      idx++;
+    } else if(it.kind==='box'){
+      const coords = packers.packCoords(it.x,it.y,it.w,it.h);
+      out.push(`#${packers.pad2(idx)}M1 ${coords}`); // placeholder flag for graphics
+      idx++;
+    }
+  }
+  return out.join('');
+}
+
+// ---------- Wire up UI ----------
+const fi = document.getElementById('file');
+const out = document.getElementById('out');
+const statusEl = document.getElementById('status');
+const btnConvert = document.getElementById('btnConvert');
+const btnCopy = document.getElementById('btnCopy');
+const btnDownload = document.getElementById('btnDownload');
+const fnbox = document.getElementById('fnbox');
+const btnApply = document.getElementById('btnApply');
+
+// preload editable packers code
+fnbox.value = `// Edit the three functions and click \"Apply custom packers\"\npackers.packCoords = (x,y,w,h)=>{\n  // Example placeholder: concat decimal fields X4Y4W4H4\n  return String(x).padStart(4,'0')+String(y).padStart(4,'0')+String(w).padStart(4,'0')+String(h).padStart(4,'0');\n};\npackers.packTextAttrs = (font,size,align)=>{\n  // TODO map A1/A2…, size, align (LT/CT/RT…) to KPM flags.\n  return 'C0';\n};\npackers.packBarcodeAttrs = (sym,module)=>{\n  // TODO map sym (CODE128/QR/…) + module to something like ['K0',' A003250202']\n  return ['K0',''];\n};`;
+
+let lastText = '';
+
+btnConvert.onclick = async ()=>{
+  try{
+    const f = fi.files && fi.files[0];
+    if(!f){ statusEl.textContent = 'no file'; return; }
+    const txt = await f.text();
+    const tpl = parsePECTAB(txt);
+    const ad = buildAD(tpl);
+    out.value = ad; lastText = ad;
+    statusEl.innerHTML = `<span class="ok">done</span> — ${tpl.items.length} segments`;
+  } catch(err){
+    console.error(err); statusEl.innerHTML = `<span class="warn">error</span> (see console)`;
+  }
+};
+
+btnCopy.onclick = async ()=>{
+  if(!out.value) return; await navigator.clipboard.writeText(out.value);
+  statusEl.innerHTML = `<span class="ok">copied</span>`;
+};
+
+btnDownload.onclick = ()=>{
+  if(!out.value) return;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([out.value],{type:'text/plain'}));
+  a.download = 'ad.txt'; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+};
+
+btnApply.onclick = ()=>{
+  try{ new Function(fnbox.value)(); statusEl.textContent = 'custom packers applied'; }
+  catch(e){ console.error(e); statusEl.innerHTML = '<span class="warn">error in custom code</span>'; }
+};
+</script>
+</body>
+</html>
