@@ -43,6 +43,19 @@
     </div>
   </section>
 
+  <!-- NEW: Detected fields UI -->
+  <section class="card" id="fieldsCard" hidden>
+    <div class="hd">2) Fill field values (detected from <code>DATA=%…%</code>)</div>
+    <div class="bd">
+      <div id="fieldList"></div>
+      <div class="row">
+        <button id="btnApplyFields">Apply values & Convert</button>
+        <button id="btnClearFields">Clear values</button>
+      </div>
+      <div class="fine">We scanned your PECTAB for tokens like <code>%TITLE%</code>. Enter values above and click <em>Apply values & Convert</em>.</div>
+    </div>
+  </section>
+
   <section class="card">
     <div class="hd">Output — AD one‑liner</div>
     <div class="bd">
@@ -147,25 +160,93 @@ const btnCopy = document.getElementById('btnCopy');
 const btnDownload = document.getElementById('btnDownload');
 const fnbox = document.getElementById('fnbox');
 const btnApply = document.getElementById('btnApply');
+// new DOM refs for fields
+const fieldsCard = document.getElementById('fieldsCard');
+const fieldList = document.getElementById('fieldList');
+const btnApplyFields = document.getElementById('btnApplyFields');
+const btnClearFields = document.getElementById('btnClearFields');
 
 // preload editable packers code
 fnbox.value = `// Edit the three functions and click \"Apply custom packers\"\npackers.packCoords = (x,y,w,h)=>{\n  // Example placeholder: concat decimal fields X4Y4W4H4\n  return String(x).padStart(4,'0')+String(y).padStart(4,'0')+String(w).padStart(4,'0')+String(h).padStart(4,'0');\n};\npackers.packTextAttrs = (font,size,align)=>{\n  // TODO map A1/A2…, size, align (LT/CT/RT…) to KPM flags.\n  return 'C0';\n};\npackers.packBarcodeAttrs = (sym,module)=>{\n  // TODO map sym (CODE128/QR/…) + module to something like ['K0',' A003250202']\n  return ['K0',''];\n};`;
 
 let lastText = '';
+let lastTpl = null;
+let fieldValues = {}; // { TOKEN: value }
+
+function detectTokens(tpl){
+  const set = new Set();
+  for(const it of tpl.items){
+    if((it.kind==='text' || it.kind==='barcode') && /^%[^%]+%$/.test(it.data||'')){
+      set.add(it.data.slice(1,-1));
+    }
+  }
+  return [...set];
+}
+
+function renderFields(tokens){
+  if(!tokens.length){ fieldsCard.hidden = true; fieldList.innerHTML=''; return; }
+  fieldsCard.hidden = false;
+  fieldList.innerHTML = '';
+  for(const name of tokens){
+    const wrap = document.createElement('div');
+    const label = document.createElement('label');
+    label.textContent = name + ' =';
+    const input = document.createElement('input');
+    input.className = 'mono';
+    input.value = fieldValues[name] || '';
+    input.placeholder = name;
+    input.oninput = () => { fieldValues[name] = input.value; };
+    wrap.appendChild(label); wrap.appendChild(input);
+    fieldList.appendChild(wrap);
+  }
+}
+
+function applyFields(tpl){
+  // shallow clone with substituted DATA
+  const clone = { id: tpl.id, page: tpl.page, items: tpl.items.map(it=>({ ...it })) };
+  for(const it of clone.items){
+    if(typeof it.data === 'string'){
+      it.data = it.data.replace(/%([^%]+)%/g, (m,key)=> (fieldValues[key] ?? ''));
+    }
+  }
+  return clone;
+}
 
 btnConvert.onclick = async ()=>{
   try{
     const f = fi.files && fi.files[0];
     if(!f){ statusEl.textContent = 'no file'; return; }
     const txt = await f.text();
-    const tpl = parsePECTAB(txt);
-    const ad = buildAD(tpl);
+    lastTpl = parsePECTAB(txt);
+    // Detect tokens and prompt user once
+    const tokens = detectTokens(lastTpl);
+    renderFields(tokens);
+    if(tokens.length){
+      for(const t of tokens){
+        const prev = fieldValues[t] || '';
+        const v = prompt(`${t} =`, prev);
+        if(v !== null) fieldValues[t] = v;
+      }
+      renderFields(tokens);
+    }
+    const filled = applyFields(lastTpl);
+    const ad = buildAD(filled);
     out.value = ad; lastText = ad;
-    statusEl.innerHTML = `<span class="ok">done</span> — ${tpl.items.length} segments`;
+    statusEl.innerHTML = `<span class=\"ok\">done</span> — ${filled.items.length} segments${tokens.length?` · ${tokens.length} fields filled`:''}`;
   } catch(err){
-    console.error(err); statusEl.innerHTML = `<span class="warn">error</span> (see console)`;
+    console.error(err); statusEl.innerHTML = `<span class=\"warn\">error</span> (see console)`;
   }
 };
+
+btnApplyFields.onclick = ()=>{
+  if(!lastTpl){ statusEl.textContent = 'load a file first'; return; }
+  const filled = applyFields(lastTpl);
+  const ad = buildAD(filled);
+  out.value = ad; lastText = ad;
+  statusEl.innerHTML = `<span class=\"ok\">done</span> — ${filled.items.length} segments`;
+};
+
+btnClearFields.onclick = ()=>{ fieldValues = {}; renderFields([]); };
 
 btnCopy.onclick = async ()=>{
   if(!out.value) return; await navigator.clipboard.writeText(out.value);
