@@ -1,3 +1,4 @@
+
 <!doctype html>
 <html lang="en">
 <head>
@@ -22,6 +23,10 @@
   .ok{color:var(--ok)} .muted{color:var(--muted)} .warn{color:var(--warn)}
   .mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
   .fine{font-size:12px;color:var(--muted)}
+  .list{display:flex;flex-direction:column;gap:8px}
+  .item{padding:8px 10px;border:1px solid #26344c;border-radius:10px;display:flex;align-items:center;justify-content:space-between}
+  .item small{color:var(--muted)}
+  .tag{font-size:11px;padding:2px 6px;border-radius:6px;background:#1b2a45;color:#b8d0ff;border:1px solid #2a3a55}
 </style>
 </head>
 <body>
@@ -42,8 +47,18 @@
         </div>
         <div>
           <label>Data header</label>
-          <input id="dataHeader" value="3CP" />
+          <input id="dataHeader" value="CP" />
         </div>
+      </div>
+      <div>
+        <label>PT preamble (optional)</label>
+        <input id="ptPreamble" class="textlike" placeholder="e.g., ##?V1A#@;" value="##?V1A#@;" />
+      </div>
+      <div>
+        <label>PT literals (one per line, optional)</label>
+        <textarea id="ptLiterals" class="mono" placeholder="#TICK
+#CHECK
+#BOARD"></textarea>
       </div>
       <div class="row">
         <button id="btnConvert">Parse & Ask for Data</button>
@@ -53,7 +68,6 @@
     </div>
   </section>
 
-  <!-- 2) Detected tokens -> inputs -->
   <section class="card" id="fieldsCard" hidden>
     <div class="hd">2) Fill field values (detected from <code>DATA=%…%</code>)</div>
     <div class="bd">
@@ -66,7 +80,14 @@
     </div>
   </section>
 
-  <!-- 3) Outputs -->
+  <section class="card" id="elementsCard" hidden>
+    <div class="hd">3) Elements (auto)</div>
+    <div class="bd">
+      <div id="elemList" class="list"></div>
+      <div class="fine">Click <em>Edit</em> on an item to set Index (NN), Style (SS), Grid (e.g., E23/J54), and Flag (B/D/R/F).</div>
+    </div>
+  </section>
+
   <section class="card">
     <div class="hd">Output — Template (TT)</div>
     <div class="bd">
@@ -82,12 +103,12 @@
   <section class="card">
     <div class="hd">Output — Data (ATB)</div>
     <div class="bd">
-      <textarea id="outData" class="mono" placeholder="3CP#05...#08...#...#$" spellcheck="false"></textarea>
+      <textarea id="outData" class="mono" placeholder="CP#05...#08...#...#$" spellcheck="false"></textarea>
       <div class="row">
         <button id="btnCopyData">Copy Data</button>
         <button id="btnDownloadData">Download Data</button>
       </div>
-      <div class="fine">Values-only line. Starts with your Data header (e.g., <code>3CP</code>), ends with <code>#$</code>.</div>
+      <div class="fine">Values-only line. Starts with your Data header (e.g., <code>CP</code>), ends with <code>#$</code>.</div>
     </div>
   </section>
 
@@ -99,13 +120,12 @@
         <button id="btnCopyPT">Copy PT</button>
         <button id="btnDownloadPT">Download PT</button>
       </div>
-      <div class="fine">Monolithic program (placeholder packing). Often optional if you use TT+Data.</div>
+      <div class="fine">Monolithic program (grid-style segments + optional preamble/literals).</div>
     </div>
   </section>
 </main>
 
 <script>
-// ---------- Minimal PECTAB (readable PT) parser ----------
 const RE = {
   PT:   /^PT;ID=(.+)$/i,
   PAGE: /^PAGE;W=(\d+);H=(\d+)/i,
@@ -113,7 +133,6 @@ const RE = {
   BAR:  /^BARCODE;TYPE=([^;]+);X=(\d+);Y=(\d+);W=(\d+);H=(\d+);MODULE=(\d+);DATA=(.+)$/i,
   BOX:  /^BOX;X=(\d+);Y=(\d+);W=(\d+);H=(\d+);T=(\d+)$/i
 };
-
 function parsePECTAB(txt){
   let id = 'ATB0101';
   let page = {w:0,h:0,dpi:203};
@@ -126,33 +145,29 @@ function parsePECTAB(txt){
     if(m = line.match(RE.PAGE)){ page.w=+m[1]; page.h=+m[2]; continue; }
     if(m = line.match(RE.TEXT)){
       const [_,x,y,w,h,font,size,align,data]=m;
-      items.push({kind:'text',x:+x,y:+y,w:+w,h:+h,font,size:+size,align,data});
+      items.push({kind:'text',x:+x,y:+y,w:+w,h:+h,font,size:+size,align,data,meta:{}});
       continue;
     }
     if(m = line.match(RE.BAR)){
       const [_,type,x,y,w,h,mod,data]=m;
-      items.push({kind:'barcode',sym:type,x:+x,y:+y,w:+w,h:+h,module:+mod,data});
+      items.push({kind:'barcode',sym:type,x:+x,y:+y,w:+w,h:+h,module:+mod,data,meta:{}});
       continue;
     }
     if(m = line.match(RE.BOX)){
       const [_,x,y,w,h,t]=m;
-      items.push({kind:'box',x:+x,y:+y,w:+w,h:+h,t:+t});
+      items.push({kind:'box',x:+x,y:+y,w:+w,h:+h,t:+t,meta:{}});
       continue;
     }
   }
   return {id,page,items};
 }
-
-// ---------- Placeholder packers (replace with KPM180H rules when available) ----------
 let packers = {
   pad2: (n)=> (n<10?"0":"")+n,
   packCoords: (x,y,w,h)=> `${x.toString().padStart(4,'0')}${y.toString().padStart(4,'0')}${w.toString().padStart(4,'0')}${h.toString().padStart(4,'0')}`,
-  packTextAttrs: (font,size,align)=> 'B0',   // 'B' block placeholder
-  packBarcodeAttrs: (sym,module)=> ['B0',''],// same as text; placeholder
-  packBoxAttrs: ()=> 'L0'                     // 'L' line/box placeholder
+  packTextAttrs: ()=> 'B0',
+  packBarcodeAttrs: ()=> ['B0',''],
+  packBoxAttrs: ()=> 'L0'
 };
-
-// ---------- Builders ----------
 function buildTT(tpl, header='AD;TT03'){
   const parts = [header];
   let idx = 1;
@@ -164,34 +179,40 @@ function buildTT(tpl, header='AD;TT03'){
   }
   return parts.join('');
 }
-
-function buildPT(tpl, header=`AD;PT`){
+function normGrid(g){ return (g||'').toUpperCase().replace(/[^A-Z0-9]/g,''); }
+function buildPT(tpl, header='AD;PT'){
   const parts = [header];
-  let idx = 1;
-  for(const it of tpl.items){
-    const coords = packers.packCoords(it.x,it.y,it.w,it.h);
-    if(it.kind==='text') parts.push(`#${packers.pad2(idx)}T0${coords}`);
-    else if(it.kind==='barcode') parts.push(`#${packers.pad2(idx)}K0${coords}`);
-    else if(it.kind==='box') parts.push(`#${packers.pad2(idx)}G0${coords}`);
-    idx++;
+  const pre = (document.getElementById('ptPreamble')||{}).value||'';
+  if(pre && pre.trim()) parts.push(pre.trim());
+  const litEl = document.getElementById('ptLiterals');
+  if(litEl && litEl.value){
+    litEl.value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean).forEach(L=>{
+      const lit = L.startsWith('#')? L : ('#'+L);
+      parts.push(lit);
+    });
+  }
+  let running=1;
+  for(const b of tpl.items){
+    const idx = (b.meta && b.meta.index!=null)? b.meta.index : running;
+    running++;
+    const style = (b.meta && b.meta.style) || '03';
+    const grid = normGrid((b.meta && b.meta.grid) || '');
+    const flag = (b.meta && b.meta.flag) || 'B';
+    parts.push(`#${String(idx).padStart(2,'0')}${style}${grid}${flag}`);
   }
   return parts.join('');
 }
-
-// Data builder (ATB values): sequential slots from item order (skip boxes)
-function buildATBData(tpl, header='3CP'){
+function buildATBData(tpl, header='CP'){
   const parts = [header];
   let idx = 1;
   for(const it of tpl.items){
     if(it.kind==='box'){ idx++; continue; }
-    parts.push(`#${packers.pad2(idx)}${(it.data??'').toString()}`);
+    parts.push(`#${String(idx).padStart(2,'0')}${(it.data??'').toString()}`);
     idx++;
   }
   parts.push('#$');
   return parts.join('');
 }
-
-// Token detection and substitution
 function detectTokens(tpl){
   const set = new Set();
   for(const it of tpl.items){
@@ -200,9 +221,8 @@ function detectTokens(tpl){
   }
   return [...set];
 }
-
 function applyFieldValues(tpl, values){
-  const clone = { id: tpl.id, page: tpl.page, items: tpl.items.map(it=>({...it})) };
+  const clone = { id: tpl.id, page: tpl.page, items: tpl.items.map(it=>({...it, meta:{...it.meta}})) };
   for(const it of clone.items){
     if(typeof it.data === 'string'){
       it.data = it.data.replace(/%([^%]+)%/g, (_,k)=> values[k] ?? '');
@@ -210,34 +230,29 @@ function applyFieldValues(tpl, values){
   }
   return clone;
 }
-
-// ---------- UI wiring ----------
 const fi = document.getElementById('file');
 const tplIdEl = document.getElementById('tplId');
 const dataHeaderEl = document.getElementById('dataHeader');
 const statusEl = document.getElementById('status');
 const btnConvert = document.getElementById('btnConvert');
 const btnBuild = document.getElementById('btnBuild');
-
 const fieldsCard = document.getElementById('fieldsCard');
 const fieldList = document.getElementById('fieldList');
 const btnApplyFields = document.getElementById('btnApplyFields');
 const btnClearFields = document.getElementById('btnClearFields');
-
+const elementsCard = document.getElementById('elementsCard');
+const elemList = document.getElementById('elemList');
 const outTT = document.getElementById('outTT');
 const outData = document.getElementById('outData');
 const outPT = document.getElementById('outPT');
-
 const btnCopyTT = document.getElementById('btnCopyTT');
 const btnDownloadTT = document.getElementById('btnDownloadTT');
 const btnCopyData = document.getElementById('btnCopyData');
 const btnDownloadData = document.getElementById('btnDownloadData');
 const btnCopyPT = document.getElementById('btnCopyPT');
 const btnDownloadPT = document.getElementById('btnDownloadPT');
-
 let lastTpl = null;
-let fieldValues = {}; // {TOKEN: value}
-
+let fieldValues = {};
 function renderFields(tokens){
   fieldsCard.hidden = tokens.length===0;
   fieldList.innerHTML = '';
@@ -255,16 +270,48 @@ function renderFields(tokens){
     fieldList.appendChild(wrap);
   }
 }
-
+function refreshElemList(){
+  const items = lastTpl?.items || [];
+  elementsCard.hidden = items.length === 0;
+  elemList.innerHTML='';
+  items.forEach((b,i)=>{
+    if(!b.meta) b.meta = {index:i+1,style:'03',grid:'',flag:'B'};
+    const item = document.createElement('div');
+    item.className='item';
+    const idx = (b.meta.index!=null)? b.meta.index : (i+1);
+    const style = b.meta.style||'03';
+    const grid = b.meta.grid||'';
+    const flag = b.meta.flag||'B';
+    const title = `${(b.name||'(unnamed)')} <span class="tag">${b.kind}</span>`;
+    item.innerHTML = `<div><div>${title}</div><small class="mono">#${String(idx).padStart(2,'0')} style=${style} grid=${grid||'—'} flag=${flag}</small></div>`;
+    const btn = document.createElement('button');
+    btn.className='ghost';
+    btn.textContent='Edit';
+    btn.onclick = ()=> editElemMeta(b,i);
+    item.appendChild(btn);
+    elemList.appendChild(item);
+  });
+}
+function editElemMeta(b,i){
+  const name = prompt(`Name for this ${b.kind} region`, b.name||'');
+  if(name!==null) b.name = name.trim();
+  const idxIn = prompt('Index (NN) used in PT/TT (01..99). Leave blank to use order.', String(b.meta.index??''));
+  b.meta.index = idxIn===null||idxIn.trim()===''? null : Math.max(1, Math.min(99, parseInt(idxIn,10)|| (i?i+1:1)));
+  const sty = prompt('Style code (SS) like 03,06,04 from your grid spec', b.meta.style||'03');
+  if(sty!==null) b.meta.style = (''+sty).padStart(2,'0');
+  const grd = prompt('Grid (e.g., E23/J54, H10, K41/M54). Slashes optional; we will concatenate.', b.meta.grid||'');
+  if(grd!==null) b.meta.grid = grd.trim();
+  const flg = prompt('Flag (B/D/R/F) as per your sample', b.meta.flag||'B');
+  if(flg!==null) b.meta.flag = (''+flg).toUpperCase().slice(0,1);
+  refreshElemList();
+}
 btnConvert.onclick = async ()=>{
   try{
     const f = fi.files && fi.files[0];
     if(!f){ statusEl.textContent = 'no file'; return; }
     const txt = await f.text();
     lastTpl = parsePECTAB(txt);
-    // Override ID to user-specified ATB ID
     lastTpl.id = (tplIdEl.value||'ATB0101').trim();
-    // detect tokens, prompt user once, also show inputs
     const tokens = detectTokens(lastTpl);
     renderFields(tokens);
     for(const t of tokens){
@@ -273,39 +320,34 @@ btnConvert.onclick = async ()=>{
       if(v !== null) fieldValues[t] = v;
     }
     renderFields(tokens);
+    refreshElemList();
     statusEl.innerHTML = `<span class="ok">parsed</span> — ${lastTpl.items.length} elements · ${tokens.length} fields`;
   }catch(e){
     console.error(e);
     statusEl.innerHTML = `<span class="warn">error</span> (see console)`;
   }
 };
-
 btnApplyFields.onclick = ()=>{
   if(!lastTpl){ statusEl.textContent = 'load a file first'; return; }
   statusEl.textContent = 'values applied (ready to build)';
 };
-
 btnClearFields.onclick = ()=>{
   fieldValues = {};
   renderFields([]);
   outTT.value = outData.value = outPT.value = '';
   statusEl.textContent = 'cleared';
 };
-
 btnBuild.onclick = ()=>{
   if(!lastTpl){ statusEl.textContent = 'load a file first'; return; }
-  // fill values and build outputs
   const filled = applyFieldValues(lastTpl, fieldValues);
   const tt = buildTT(filled, 'AD;TT03');
-  const dataStr = buildATBData(filled, (dataHeaderEl.value||'3CP').trim());
+  const dataStr = buildATBData(filled, (dataHeaderEl.value||'CP').trim());
   const pt = buildPT(filled, 'AD;PT');
   outTT.value = tt;
   outData.value = dataStr;
   outPT.value = pt;
   statusEl.innerHTML = `<span class="ok">built</span> — TT + DATA + PT ready`;
 };
-
-// copy + download helpers
 function dl(text, name){
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([text],{type:'text/plain'}));
