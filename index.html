@@ -56,6 +56,19 @@
     </div>
   </section>
 
+  <!-- NEW: Detected fields UI -->
+  <section class="card" id="fieldsCard" hidden>
+    <div class="hd">2) Fill field values (detected from <code>DATA=%…%</code>)</div>
+    <div class="bd">
+      <div id="fieldList"></div>
+      <div class="row">
+        <button id="btnApplyFields">Apply values & Convert</button>
+        <button id="btnClearFields">Clear values</button>
+      </div>
+      <div class="fine">We scanned your PECTAB for tokens like <code>%TITLE%</code>. Enter values above and click <em>Apply values & Convert</em>.</div>
+    </div>
+  </section>
+
   <section class="card">
     <div class="hd">Output — AD one‑liner</div>
     <div class="bd">
@@ -68,6 +81,20 @@
       </details>
     </div>
   </section>
+
+  <!-- NEW: Data PECTAB output -->
+  <section class="card">
+    <div class="hd">Output — Data (PECTAB)</div>
+    <div class="bd">
+      <textarea id="outData" class="mono" placeholder="BTP010101#01...#02...#$" spellcheck="false"></textarea>
+      <div class="row">
+        <button id="btnCopyData">Copy Data</button>
+        <button id="btnDownloadData">Download Data</button>
+      </div>
+      <div class="fine">Header uses your template ID (e.g., <code>BTT0101</code> or <code>ATB0101</code>). Values come from the filled fields above. Box elements are skipped.</div>
+    </div>
+  </section>
+
 </main>
 
 <script>
@@ -151,6 +178,36 @@ function buildAD(tpl){
   return out.join('');
 }
 
+// Build the Data PECTAB (IATA-style) string using filled values
+function buildDataPECTAB(tpl){
+  // Header uses the template ID (you can set BTT0101/ATB0101 in your source template)
+  const head = tpl.id;
+  let idx = 1;
+  const parts = [head];
+  for(const it of tpl.items){
+    if(it.kind==='box') continue; // skip graphic boxes for data
+    const val = (it.data ?? '').toString();
+    parts.push(`#${packers.pad2(idx)}${val}`);
+    idx++;
+  }
+  parts.push('#$');
+  return parts.join('');
+}${flag} ${coords}`);
+      idx++;
+    } else if(it.kind==='barcode'){
+      const [flag, aux] = packers.packBarcodeAttrs(it.sym, it.module);
+      const coords = packers.packCoords(it.x,it.y,it.w,it.h);
+      out.push(`#${packers.pad2(idx)}${flag} ${coords}${aux?(''+aux):''}`);
+      idx++;
+    } else if(it.kind==='box'){
+      const coords = packers.packCoords(it.x,it.y,it.w,it.h);
+      out.push(`#${packers.pad2(idx)}M1 ${coords}`); // placeholder flag for graphics
+      idx++;
+    }
+  }
+  return out.join('');
+}
+
 // ---------- Wire up UI ----------
 const fi = document.getElementById('file');
 const out = document.getElementById('out');
@@ -160,6 +217,15 @@ const btnCopy = document.getElementById('btnCopy');
 const btnDownload = document.getElementById('btnDownload');
 const fnbox = document.getElementById('fnbox');
 const btnApply = document.getElementById('btnApply');
+// new DOM refs for fields
+const fieldsCard = document.getElementById('fieldsCard');
+const fieldList = document.getElementById('fieldList');
+const btnApplyFields = document.getElementById('btnApplyFields');
+const btnClearFields = document.getElementById('btnClearFields');
+// data pectab outputs
+const outData = document.getElementById('outData');
+const btnCopyData = document.getElementById('btnCopyData');
+const btnDownloadData = document.getElementById('btnDownloadData');
 // new DOM refs for fields
 const fieldsCard = document.getElementById('fieldsCard');
 const fieldList = document.getElementById('fieldList');
@@ -231,7 +297,9 @@ btnConvert.onclick = async ()=>{
     }
     const filled = applyFields(lastTpl);
     const ad = buildAD(filled);
+    const dataStr = buildDataPECTAB(filled);
     out.value = ad; lastText = ad;
+    outData.value = dataStr;
     statusEl.innerHTML = `<span class=\"ok\">done</span> — ${filled.items.length} segments${tokens.length?` · ${tokens.length} fields filled`:''}`;
   } catch(err){
     console.error(err); statusEl.innerHTML = `<span class=\"warn\">error</span> (see console)`;
@@ -242,11 +310,15 @@ btnApplyFields.onclick = ()=>{
   if(!lastTpl){ statusEl.textContent = 'load a file first'; return; }
   const filled = applyFields(lastTpl);
   const ad = buildAD(filled);
-  out.value = ad; lastText = ad;
+  const dataStr = buildDataPECTAB(filled);
+  out.value = ad; lastText = ad; outData.value = dataStr;
   statusEl.innerHTML = `<span class=\"ok\">done</span> — ${filled.items.length} segments`;
 };
 
-btnClearFields.onclick = ()=>{ fieldValues = {}; renderFields([]); };
+btnClearFields.onclick = ()=>{ fieldValues = {}; renderFields([]); outData.value=''; };
+
+btnCopyData.onclick = async ()=>{ if(outData.value) await navigator.clipboard.writeText(outData.value); };
+btnDownloadData.onclick = ()=>{ if(!outData.value) return; const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([outData.value],{type:'text/plain'})); a.download='data-pectab.txt'; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000); };
 
 btnCopy.onclick = async ()=>{
   if(!out.value) return; await navigator.clipboard.writeText(out.value);
